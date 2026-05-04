@@ -41,7 +41,7 @@ begin
         elsif rising_edge(clk_in) then
             -- Cuando el contador llega al límite (ej. 10 para simulación rápida),
             -- la señal de salida conmuta su estado (Toggle).
-            if counter = 10 then
+            if counter = 24999999 then
                 temporal <= not temporal; -- Inversión de estado (0 a 1 o 1 a 0)
                 counter <= 0;             -- Reinicio del conteo
             else
