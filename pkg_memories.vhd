@@ -1,4 +1,4 @@
-----------------------------------------------------------------------------------
+ ----------------------------------------------------------------------------------
 -- Universidad del Cauca
 -- Facultad de Ingeniería Electrónica y Telecomunicaciones
 -- Proyecto: Sistema Digital ROM-RAM con FSM
