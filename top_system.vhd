@@ -1,14 +1,9 @@
-  ----------------------------------------------------------------------------------
+ ----------------------------------------------------------------------------------
 -- Universidad del Cauca
 -- Facultad de Ingeniería Electrónica y Telecomunicaciones
 -- Asignatura: Sistemas Digitales II
 -- Proyecto: Sistema de Gestión de Memorias (ROM a RAM)
 -- Módulo: Entidad Superior (Top-Level)
---
--- Descripción: 
--- Este archivo integra todos los módulos del sistema (ROM, RAM, FSM, Divisor 
--- y Decodificadores). Define las interconexiones físicas con la FPGA Cyclone III
--- y gestiona el flujo de datos desde la lectura de ROM hasta la visualización.
 ----------------------------------------------------------------------------------
 
 library IEEE;
@@ -18,93 +13,123 @@ use work.pkg_memories.all;
 
 entity top_system is
     port (
-        -- ENTRADAS FÍSICAS (Pines de la FPGA)
-        clk_fpga  : in  std_logic; -- Reloj base de 50 MHz
-        rst       : in  std_logic; -- Botón de reset (Push-button)
-        start     : in  std_logic; -- Botón de inicio de operación
+        -- ENTRADAS (Los botones y el pulso principal del sistema)
+        clk_fpga  : in  std_logic; -- El motor principal que hace fluir todo a gran velocidad.
+        rst       : in  std_logic; -- El botón de emergencia (vacía las tuberías y reinicia todo).
+        start     : in  std_logic; -- El botón que le da la orden al operario de empezar a trabajar.
         
-        -- SALIDAS FÍSICAS (Displays de 7 segmentos y LEDs)
-        disp_high : out std_logic_vector(6 downto 0); -- Display para Nibble Alto
-        disp_low  : out std_logic_vector(6 downto 0); -- Display para Nibble Bajo
-        disp_mode : out std_logic_vector(6 downto 0); -- Indica el modo ('A' de Automático)
-        done      : out std_logic                     -- LED indicador de fin de proceso
+        -- SALIDAS (Las pantallas y luces donde vemos los resultados)
+        disp_high : out std_logic_vector(6 downto 0); -- Muestra la mitad superior de los datos.
+        disp_low  : out std_logic_vector(6 downto 0); -- Muestra la mitad inferior de los datos.
+        disp_mode : out std_logic_vector(6 downto 0); -- Letra o símbolo que indica el modo actual.
+        done      : out std_logic                     -- Luz que se enciende cuando el tanque RAM ya se llenó.
     );
 end entity;
 
 architecture behavior of top_system is
 
-    -- SEÑALES INTERNAS (Interconexiones o "Cables" virtuales)
-    signal s_rst_n   : std_logic; -- Reset sincronizado (negado para lógica interna)
-    signal s_start_n : std_logic; -- Start sincronizado
-    signal clk_slow  : std_logic; -- Reloj de baja frecuencia para la FSM
-    signal addr_fsm  : std_logic_vector(ADDR_WIDTH-1 downto 0); -- Bus de direcciones compartido
-    signal data_rom  : std_logic_vector(DATA_WIDTH-1 downto 0); -- Dato saliendo de ROM
-    signal data_ram  : std_logic_vector(DATA_WIDTH-1 downto 0); -- Dato saliendo de RAM
-    signal we_ram_en : std_logic; -- Permiso de escritura generado por la FSM
+    -- SEÑALES INTERNAS (Piensa en ellas como los cables internos o tuberías 
+    -- que conectan un bloque con otro dentro del chip, no salen al exterior).
+    signal s_rst_n   : std_logic; -- Versión negada (acondicionada) del reset.
+    signal s_start_n : std_logic; -- Versión negada (acondicionada) del start.
+    signal clk_slow  : std_logic; -- Reloj más lento (el operario no puede trabajar a la velocidad pura de la FPGA).
+    signal addr_fsm  : std_logic_vector(ADDR_WIDTH-1 downto 0); -- La dirección o "coordenada" de la memoria.
+    signal data_rom  : std_logic_vector(DATA_WIDTH-1 downto 0); -- La tubería por donde viaja el agua de la ROM.
+    signal data_ram  : std_logic_vector(DATA_WIDTH-1 downto 0); -- La tubería por donde entra el agua a la RAM.
+    signal we_ram_en : std_logic; -- La válvula "Write Enable": si es 1, deja entrar agua a la RAM.
+    
+    -- SEÑALES PARA EL CONTROL DEL DISPLAY
+    signal mux_data   : std_logic_vector(DATA_WIDTH-1 downto 0); -- Tubería final que va hacia los displays.
+    signal display_en : std_logic := '0'; -- Memoria (Flip-Flop) que recuerda si debemos encender las pantallas.
 
 begin
 
-    -- GESTIÓN DE BOTONES:
-    -- Los botones en muchas placas FPGA son activos en bajo. Aquí se normaliza
-    -- la lógica para que el resto del sistema trabaje con lógica positiva.
+    -- 1. ACONDICIONAMIENTO DE BOTONES
+    -- Los botones en las FPGA suelen mandar un '0' cuando se presionan.
+    -- Aquí invertimos esa lógica con un 'not' para que cuando se presionen, 
+    -- el sistema interno reciba un '1' (lógica positiva, más fácil de entender).
     s_rst_n   <= not rst;   
     s_start_n <= not start; 
 
-    -- INSTANCIACIÓN DEL DIVISOR DE RELOJ:
-    -- Reduce la frecuencia de la FPGA para que la transición entre datos 
-    -- sea visible en los displays.
+    -- 2. CANDADO DE VISUALIZACIÓN (LATCH / FLIP-FLOP)
+    -- Imagina esto como un interruptor de luz inteligente.
+    -- Si alguien presiona 'start', la luz se queda encendida (display_en <= '1') 
+    -- para siempre, aunque sueltes el botón. Solo se apaga si presionan 'reset'.
+    process(clk_fpga)
+    begin
+        if rising_edge(clk_fpga) then
+            if s_rst_n = '1' then       -- Si presionan reset...
+                display_en <= '0';      -- Apaga las pantallas.
+            elsif s_start_n = '1' then  -- Si presionan start...
+                display_en <= '1';      -- Enciende las pantallas y mantenlas así.
+            end if;
+        end if;
+    end process;
+
+    -- 3. MULTIPLEXOR MEJORADO (La válvula de los displays)
+    -- Un multiplexor es como una tubería en forma de "Y" con una llave selectora. 
+    -- Si 'display_en' es 1, deja pasar los datos de la RAM hacia las pantallas.
+    -- Si es 0, bloquea el paso y manda puros ceros (x"00", apaga los números).
+    mux_data <= data_ram when display_en = '1' else x"00";
+
+    -- 4. DIVISOR DE RELOJ (La caja de cambios)
+    -- La FPGA va a millones de ciclos por segundo (muy rápido). Este bloque 
+    -- reduce esa velocidad para que podamos ver el proceso y las memorias respondan bien.
     u_divisor : entity work.clk_divider
         port map(
-            clk_in  => clk_fpga,
-            rst     => s_rst_n,
-            clk_out => clk_slow
+            clk_in  => clk_fpga,  -- Entra reloj rápido
+            rst     => s_rst_n,   
+            clk_out => clk_slow   -- Sale reloj lento
         );
 
-    -- INSTANCIACIÓN DE LA FSM (Unidad de Control):
-    -- Gobierna el sistema usando el reloj lento para las transiciones de estado.
+    -- 5. MÁQUINA DE ESTADOS (El operario supervisor)
+    -- Es el cerebro del traslado. Le dice a las memorias en qué dirección (addr) 
+    -- ubicarse, cuándo escribir en la RAM (we_ram) y avisa cuándo terminó (done).
     u_fsm : entity work.fsm_control
         port map(
-            clk    => clk_slow,
+            clk    => clk_slow,   -- Trabaja al ritmo del reloj lento
             rst    => s_rst_n,
             start  => s_start_n, 
-            addr   => addr_fsm,
-            we_ram => we_ram_en,
-            done   => done 
+            addr   => addr_fsm,   -- Genera la dirección (Ej: 0, 1, 2, 3...)
+            we_ram => we_ram_en,  -- Abre la válvula de escritura de la RAM
+            done   => done        -- Levanta la bandera de "proceso terminado"
         );
 
-    -- INSTANCIACIÓN DE MEMORIA ROM:
-    -- Fuente de datos. Nota: Se usa clk_fpga para máxima velocidad de lectura.
+    -- 6. MEMORIA ROM (El tanque de lectura)
+    -- Recibe la dirección (addr_fsm) y automáticamente saca los datos guardados en esa posición.
     u_rom : entity work.rom_mem
         port map(
             clk  => clk_fpga,
-            addr => addr_fsm,
-            data => data_rom
+            addr => addr_fsm,     -- ¿Qué posición quieres leer?
+            data => data_rom      -- Aquí tienes el dato (sale por esta tubería)
         );
 
-    -- INSTANCIACIÓN DE MEMORIA RAM:
-    -- Destino de datos. Se conecta directamente a la salida de la ROM (di => data_rom).
+    -- 7. MEMORIA RAM (El tanque de escritura)
+    -- Recibe el dato de la ROM y lo guarda en la dirección indicada, PERO solo 
+    -- si la FSM le da permiso activando 'we_ram_en'.
     u_ram : entity work.ram_mem
         port map(
             clk  => clk_fpga,
-            we   => we_ram_en,
-            addr => addr_fsm,
-            di   => data_rom,
-            do   => data_ram
+            we   => we_ram_en,    -- Permiso para escribir (Write Enable)
+            addr => addr_fsm,     -- ¿En qué posición lo guardo?
+            di   => data_rom,     -- Dato de entrada (viene de la ROM)
+            do   => data_ram      -- Dato de salida (lo que acabamos de guardar)
         );
 
-    -- ETAPA DE VISUALIZACIÓN (Decodificadores):
-    -- Convierte los nibbles de la RAM y caracteres estáticos a formato de 7 segmentos.
-    
-    -- Muestra una 'A' constante para indicar funcionamiento Automático.
+    -- 8. DECODIFICADORES DE 7 SEGMENTOS (Traductores visuales)
+    -- Toman los datos binarios en bruto (ceros y unos) y los convierten en las 
+    -- señales necesarias para encender los palitos (segmentos) de las pantallas LED.
+
+    -- Display de Modo: Siempre muestra la letra 'A' (x"A" en hexadecimal).
     u_hex_mode : entity work.dec7seg
         port map(hex_digit => x"A", segments => disp_mode);
 
-    -- Decodifica la parte alta (bits 7-4) del dato recuperado de la RAM.
+    -- Display Alto: Toma los 4 bits más significativos del dato (7 al 4).
     u_hex_high : entity work.dec7seg
-        port map(hex_digit => data_ram(7 downto 4), segments => disp_high);
+        port map(hex_digit => mux_data(7 downto 4), segments => disp_high);
 
-    -- Decodifica la parte baja (bits 3-0) del dato recuperado de la RAM.
+    -- Display Bajo: Toma los 4 bits menos significativos del dato (3 al 0).
     u_hex_low : entity work.dec7seg
-        port map(hex_digit => data_ram(3 downto 0), segments => disp_low);
+        port map(hex_digit => mux_data(3 downto 0), segments => disp_low);
 
 end architecture;
